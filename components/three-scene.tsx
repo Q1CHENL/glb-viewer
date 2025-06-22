@@ -16,6 +16,8 @@ export default function ThreeScene() {
     position: { x: number; y: number; z: number }
     triangles: number
     materialType: string
+    materialColor: string
+    hasCustomColor: boolean
   } | null>(null)
 
   // NEW: Add state for file upload
@@ -226,9 +228,35 @@ export default function ThreeScene() {
         const geometry = selectedObject.geometry
         const triangles = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
 
-        // Get material type
-        const material = selectedObject.material as THREE.Material
-        const materialType = material.constructor.name
+        // Get material type and color information
+        let actualMaterial = selectedObject.material as THREE.Material
+        let materialType = actualMaterial.constructor.name
+        
+        // Get color information for debugging - check custom colors first to avoid hover color
+        let materialColor = "Unknown"
+        let hasCustomColor = false
+        
+        // Check if object has custom color applied
+        const customMaterial = customColorsRef.current.get(selectedObject)
+        if (customMaterial && 'color' in customMaterial && customMaterial.color) {
+          actualMaterial = customMaterial
+          materialType = customMaterial.constructor.name
+          materialColor = `#${customMaterial.color.getHexString()}`
+          hasCustomColor = true
+        } else {
+          // Check original material if no custom color
+          const originalMaterial = originalMaterialsRef.current.get(selectedObject)
+          if (originalMaterial && 'color' in originalMaterial && originalMaterial.color) {
+            actualMaterial = originalMaterial
+            materialType = originalMaterial.constructor.name
+            materialColor = `#${originalMaterial.color.getHexString()}`
+            hasCustomColor = false
+          } else if ('color' in actualMaterial && actualMaterial.color) {
+            // Fallback to current material (but this might be hover color)
+            materialColor = `#${actualMaterial.color.getHexString()}`
+            hasCustomColor = false
+          }
+        }
 
         setObjectInfo({
           name: selectedObject.name || "Unnamed Object",
@@ -244,6 +272,8 @@ export default function ThreeScene() {
           },
           triangles: Math.floor(triangles),
           materialType,
+          materialColor,
+          hasCustomColor,
         })
       }
     }
@@ -320,12 +350,29 @@ export default function ThreeScene() {
 
   // NEW: Function to apply color to object
   const applyColorToObject = (object: THREE.Mesh, color: number) => {
-    const newMaterial = new THREE.MeshStandardMaterial({
+    // Create a more robust material that works better with various models
+    // Using MeshBasicMaterial which ignores lighting completely - should definitely show color
+    const newMaterial = new THREE.MeshBasicMaterial({
       color: color,
       side: THREE.DoubleSide,
-      metalness: 0.2,
-      roughness: 0.7,
     })
+    
+    // Alternative options if Basic doesn't work (uncomment to try):
+    // 1. Lambert material (simple lighting)
+    // const newMaterial = new THREE.MeshLambertMaterial({
+    //   color: color,
+    //   side: THREE.DoubleSide,
+    // })
+    
+    // 2. Standard material (non-metallic)
+    // const newMaterial = new THREE.MeshStandardMaterial({
+    //   color: color,
+    //   side: THREE.DoubleSide,
+    //   metalness: 0.0,        // Non-metallic
+    //   roughness: 1.0,        // Fully rough (diffuse)
+    //   transparent: false,
+    //   opacity: 1.0,
+    // })
     
     object.material = newMaterial
     
@@ -344,12 +391,10 @@ export default function ThreeScene() {
     if (originalMaterial) {
       object.material = originalMaterial
     } else {
-      // Fallback: create a default material similar to the original loader logic
-      object.material = new THREE.MeshStandardMaterial({
+      // Fallback: create a default material
+      object.material = new THREE.MeshLambertMaterial({
         color: 0x1035e2,
         side: THREE.DoubleSide,
-        metalness: 0.2,
-        roughness: 0.7,
       })
     }
     
@@ -491,6 +536,20 @@ export default function ThreeScene() {
             <div>
               <label className="block text-sm font-medium text-gray-600">Material Type</label>
               <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{objectInfo.materialType}</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-600">Material Color</label>
+              <div className="text-sm text-gray-900 bg-gray-50 p-2 rounded flex items-center gap-2">
+                <div 
+                  className="w-4 h-4 border border-gray-300 rounded"
+                  style={{ backgroundColor: objectInfo.materialColor }}
+                ></div>
+                <span>{objectInfo.materialColor}</span>
+                {objectInfo.hasCustomColor && (
+                  <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Custom</span>
+                )}
+              </div>
             </div>
           </div>
 
