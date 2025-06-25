@@ -16,6 +16,8 @@ export default function ThreeScene() {
     position: { x: number; y: number; z: number }
     triangles: number
     materialType: string
+    materialColor: string
+    hasCustomColor: boolean
   } | null>(null)
 
   // NEW: Add state for file upload
@@ -23,6 +25,21 @@ export default function ThreeScene() {
   const [loadedModelName, setLoadedModelName] = useState("LittlestTokyo.glb")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const loadModelRef = useRef<(file: File) => void>() // <- NEW
+  const customColorsRef = useRef<Map<THREE.Object3D, THREE.Material>>(new Map()) // NEW: Reference to custom colors
+  const originalMaterialsRef = useRef<Map<THREE.Object3D, THREE.Material>>(new Map()) // NEW: Reference to original materials
+
+  // NEW: Add state for context menu
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean
+    x: number
+    y: number
+    targetObject: THREE.Mesh | null
+  }>({
+    visible: false,
+    x: 0,
+    y: 0,
+    targetObject: null
+  })
 
   // --- file input handler (must be outside useEffect so JSX can see it)
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -109,6 +126,8 @@ export default function ThreeScene() {
           // Clear previous clickable objects
           clickableObjects.length = 0
           originalMaterials.clear()
+          originalMaterialsRef.current.clear() // NEW: Clear original materials ref
+          customColorsRef.current.clear() // NEW: Clear custom colors when loading new model
 
           // Scale and position the model
           gltf.scene.scale.setScalar(0.05)
@@ -119,6 +138,7 @@ export default function ThreeScene() {
           gltf.scene.traverse((child: any) => {
             if (child.isMesh) {
               originalMaterials.set(child, child.material)
+              originalMaterialsRef.current.set(child, child.material) // NEW: Store in ref too
               clickableObjects.push(child)
               meshCount++
 
@@ -170,13 +190,15 @@ export default function ThreeScene() {
 
       // Reset previous highlight
       if (highlighted) {
-        highlighted.material = originalMaterials.get(highlighted) as THREE.Material
+        // Use custom color if available, otherwise use original material
+        const materialToRestore = customColorsRef.current.get(highlighted) || originalMaterials.get(highlighted) as THREE.Material
+        highlighted.material = materialToRestore
         highlighted = null
       }
 
       if (hits.length) {
         highlighted = hits[0].object as THREE.Mesh
-        // Save mat if unseen
+        // Save original material if unseen
         if (!originalMaterials.has(highlighted)) originalMaterials.set(highlighted, highlighted.material)
         highlighted.material = new THREE.MeshBasicMaterial({
           color: 0x10b3e2,
@@ -206,9 +228,35 @@ export default function ThreeScene() {
         const geometry = selectedObject.geometry
         const triangles = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
 
-        // Get material type
-        const material = selectedObject.material as THREE.Material
-        const materialType = material.constructor.name
+        // Get material type and color information
+        let actualMaterial = selectedObject.material as THREE.Material
+        let materialType = actualMaterial.constructor.name
+        
+        // Get color information for debugging - check custom colors first to avoid hover color
+        let materialColor = "Unknown"
+        let hasCustomColor = false
+        
+        // Check if object has custom color applied
+        const customMaterial = customColorsRef.current.get(selectedObject)
+        if (customMaterial && 'color' in customMaterial && customMaterial.color) {
+          actualMaterial = customMaterial
+          materialType = customMaterial.constructor.name
+          materialColor = `#${customMaterial.color.getHexString()}`
+          hasCustomColor = true
+        } else {
+          // Check original material if no custom color
+          const originalMaterial = originalMaterialsRef.current.get(selectedObject)
+          if (originalMaterial && 'color' in originalMaterial && originalMaterial.color) {
+            actualMaterial = originalMaterial
+            materialType = originalMaterial.constructor.name
+            materialColor = `#${originalMaterial.color.getHexString()}`
+            hasCustomColor = false
+          } else if ('color' in actualMaterial && actualMaterial.color) {
+            // Fallback to current material (but this might be hover color)
+            materialColor = `#${actualMaterial.color.getHexString()}`
+            hasCustomColor = false
+          }
+        }
 
         setObjectInfo({
           name: selectedObject.name || "Unnamed Object",
@@ -224,11 +272,38 @@ export default function ThreeScene() {
           },
           triangles: Math.floor(triangles),
           materialType,
+          materialColor,
+          hasCustomColor,
         })
       }
     }
 
     window.addEventListener("click", handleClick)
+
+    // NEW: Right-click handler for context menu
+    const handleRightClick = (event: MouseEvent) => {
+      event.preventDefault() // Prevent browser context menu
+      
+      mouse.x = (event.clientX / width) * 2 - 1
+      mouse.y = -(event.clientY / height) * 2 + 1
+      raycaster.setFromCamera(mouse, camera)
+
+      const hits = raycaster.intersectObjects(clickableObjects)
+
+      if (hits.length) {
+        const clickedObject = hits[0].object as THREE.Mesh
+        setContextMenu({
+          visible: true,
+          x: event.clientX,
+          y: event.clientY,
+          targetObject: clickedObject
+        })
+      } else {
+        setContextMenu(prev => ({ ...prev, visible: false }))
+      }
+    }
+
+    window.addEventListener("contextmenu", handleRightClick)
 
     // Resize handler
     const handleResize = () => {
@@ -263,6 +338,7 @@ export default function ThreeScene() {
     return () => {
       window.removeEventListener("mousemove", handleMouseMove)
       window.removeEventListener("click", handleClick)
+      window.removeEventListener("contextmenu", handleRightClick) // NEW: cleanup right-click
       window.removeEventListener("resize", handleResize)
       controls.dispose()
       dracoLoader.dispose() // NEW: free DRACO resources
@@ -272,8 +348,70 @@ export default function ThreeScene() {
     }
   }, [])
 
+  // NEW: Function to apply color to object
+  const applyColorToObject = (object: THREE.Mesh, color: number) => {
+    // Create a more robust material that works better with various models
+    // Using MeshBasicMaterial which ignores lighting completely - should definitely show color
+    const newMaterial = new THREE.MeshBasicMaterial({
+      color: color,
+      side: THREE.DoubleSide,
+    })
+    
+    // Alternative options if Basic doesn't work (uncomment to try):
+    // 1. Lambert material (simple lighting)
+    // const newMaterial = new THREE.MeshLambertMaterial({
+    //   color: color,
+    //   side: THREE.DoubleSide,
+    // })
+    
+    // 2. Standard material (non-metallic)
+    // const newMaterial = new THREE.MeshStandardMaterial({
+    //   color: color,
+    //   side: THREE.DoubleSide,
+    //   metalness: 0.0,        // Non-metallic
+    //   roughness: 1.0,        // Fully rough (diffuse)
+    //   transparent: false,
+    //   opacity: 1.0,
+    // })
+    
+    object.material = newMaterial
+    
+    // Store the custom color material for this object
+    customColorsRef.current.set(object, newMaterial)
+    
+    // Hide context menu
+    setContextMenu(prev => ({ ...prev, visible: false }))
+  }
+
+  // NEW: Function to remove custom color and restore original material
+  const removeCustomColor = (object: THREE.Mesh) => {
+    // Get the original material from our ref
+    const originalMaterial = originalMaterialsRef.current.get(object)
+    
+    if (originalMaterial) {
+      object.material = originalMaterial
+    } else {
+      // Fallback: create a default material
+      object.material = new THREE.MeshLambertMaterial({
+        color: 0x1035e2,
+        side: THREE.DoubleSide,
+      })
+    }
+    
+    // Remove from custom colors map
+    customColorsRef.current.delete(object)
+    
+    // Hide context menu
+    setContextMenu(prev => ({ ...prev, visible: false }))
+  }
+
+  // NEW: Handle clicking outside context menu
+  const handleClickOutside = () => {
+    setContextMenu(prev => ({ ...prev, visible: false }))
+  }
+
   return (
-    <div className="flex w-full h-full overflow-hidden">
+    <div className="flex w-full h-full overflow-hidden" onClick={handleClickOutside}>
       {/* Upload Controls */}
       <div className="absolute top-4 left-4 z-10 bg-white rounded-lg shadow-lg p-3">
         <div className="flex items-center gap-3">
@@ -303,6 +441,60 @@ export default function ThreeScene() {
           <div className="bg-white rounded-lg p-6 text-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-4"></div>
             <p className="text-gray-700">Loading 3D model...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Context Menu */}
+      {contextMenu.visible && (
+        <div
+          className="absolute bg-white rounded-lg shadow-lg border border-gray-200 p-2 z-30"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-sm text-gray-600 mb-2 px-2">Choose Color:</div>
+          <div className="flex flex-col gap-1">
+            <button
+              className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded transition-colors"
+              onClick={() => contextMenu.targetObject && applyColorToObject(contextMenu.targetObject, 0xff0000)}
+            >
+              <div className="w-4 h-4 bg-red-500 rounded"></div>
+              Red
+            </button>
+            <button
+              className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded transition-colors"
+              onClick={() => contextMenu.targetObject && applyColorToObject(contextMenu.targetObject, 0x00ff00)}
+            >
+              <div className="w-4 h-4 bg-green-500 rounded"></div>
+              Green
+            </button>
+            <button
+              className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded transition-colors"
+              onClick={() => contextMenu.targetObject && applyColorToObject(contextMenu.targetObject, 0x0000ff)}
+            >
+              <div className="w-4 h-4 bg-blue-500 rounded"></div>
+              Blue
+            </button>
+            {/* Show remove color option only if object has custom color */}
+            {contextMenu.targetObject && customColorsRef.current.has(contextMenu.targetObject) && (
+              <>
+                <div className="border-t border-gray-200 my-1"></div>
+                <button
+                  className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded transition-colors text-gray-700"
+                  onClick={() => contextMenu.targetObject && removeCustomColor(contextMenu.targetObject)}
+                >
+                  <div className="w-4 h-4 border-2 border-gray-400 rounded bg-white relative">
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-xs text-gray-400">×</span>
+                    </div>
+                  </div>
+                  Remove Color
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -344,6 +536,20 @@ export default function ThreeScene() {
             <div>
               <label className="block text-sm font-medium text-gray-600">Material Type</label>
               <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{objectInfo.materialType}</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-600">Material Color</label>
+              <div className="text-sm text-gray-900 bg-gray-50 p-2 rounded flex items-center gap-2">
+                <div 
+                  className="w-4 h-4 border border-gray-300 rounded"
+                  style={{ backgroundColor: objectInfo.materialColor }}
+                ></div>
+                <span>{objectInfo.materialColor}</span>
+                {objectInfo.hasCustomColor && (
+                  <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Custom</span>
+                )}
+              </div>
             </div>
           </div>
 
