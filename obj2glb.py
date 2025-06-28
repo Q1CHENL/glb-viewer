@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import trimesh
+import numpy as np
 
 def main():
     # Set up argument parser
@@ -44,6 +45,16 @@ def main():
                 try:
                     # Load the mesh
                     mesh = trimesh.load(obj_path)
+                    
+                    # Fix coordinate system: rotate -90° around X-axis
+                    # This converts from Y-up (OBJ) to Z-up (GLB viewer expectation)
+                    rotation_matrix = trimesh.transformations.rotation_matrix(
+                        angle=np.radians(-90),  # -90 degrees
+                        direction=[1, 0, 0],    # around X-axis
+                        point=[0, 0, 0]
+                    )
+                    mesh.apply_transform(rotation_matrix)
+                    
                     # Add medium grey color to the mesh
                     # mesh.visual.face_colors = [68, 156, 255, 255]  # Medium grey RGBA
                     # Add the mesh to the scene with its name
